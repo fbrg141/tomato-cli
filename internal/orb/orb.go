@@ -44,6 +44,10 @@ type glyphKey struct {
 var (
 	glyphMu    sync.Mutex
 	glyphCache = map[glyphKey]string{}
+
+	// faintStyle dims overlaid content where the orb passes over it,
+	// producing the transparency effect.
+	faintStyle = lipgloss.NewStyle().Faint(true)
 )
 
 func styledGlyph(mode Mode, rampIdx, bits int) string {
@@ -60,16 +64,69 @@ func styledGlyph(mode Mode, rampIdx, bits int) string {
 	return s
 }
 
+// Overlay is pre-rendered content composited over the frame: styled lines
+// whose visible runes replace the orb cells behind them (spaces are
+// transparent). Row is the first overlay row, 0 being the top of the frame.
+type Overlay struct {
+	Row   int
+	Lines []string
+}
+
+type styledCell struct {
+	s string // full ANSI-wrapped cell substring
+	r rune   // the visible rune
+}
+
+// splitStyledCells splits a styled line into one substring per visible rune,
+// keeping the escape sequences that style it. Concatenating the cells
+// reproduces the original line.
+func splitStyledCells(s string) []styledCell {
+	var (
+		cells []styledCell
+		cur   strings.Builder
+		inEsc bool
+	)
+	for _, r := range s {
+		switch {
+		case r == '\x1b':
+			inEsc = true
+			cur.WriteRune(r)
+		case inEsc:
+			cur.WriteRune(r)
+			if r == 'm' {
+				inEsc = false
+			}
+		default:
+			cur.WriteRune(r)
+			cells = append(cells, styledCell{s: cur.String(), r: r})
+			cur.Reset()
+		}
+	}
+	if cur.Len() > 0 && len(cells) > 0 {
+		// trailing escape junk: keep it with the last cell
+		cells[len(cells)-1].s += cur.String()
+	}
+	return cells
+}
+
 // Frame renders the orb as braille art. t is animation time in seconds.
-// width/height are in terminal cells; dim lowers brightness (paused state).
-// progress is the current phase's completion in [0,1] — it drives an
-// end-of-phase heartbeat; pass 0 to disable.
-func Frame(mode Mode, t float64, width, height int, dim bool, progress float64) string {
+// width/height are in terminal cells (the frame has exactly height lines);
+// circleRows is the vertical budget for the circle itself — the circle is
+// centered in the top circleRows rows, sized to it, and the frame may
+// extend further down so breathing/deformation can wash over content
+// composited there. Pass circleRows == height for the classic centered
+// orb. dim lowers brightness (paused state). progress is the current
+// phase's completion in [0,1] — it drives an end-of-phase heartbeat; pass
+// 0 to disable. Overlays are composited over the orb (see Overlay).
+func Frame(mode Mode, t float64, width, height, circleRows int, dim bool, progress float64, overlays ...Overlay) string {
 	if width < 3 {
 		width = 3
 	}
 	if height < 2 {
 		height = 2
+	}
+	if circleRows <= 0 || circleRows > height {
+		circleRows = height
 	}
 	if progress < 0 {
 		progress = 0
@@ -86,7 +143,7 @@ func Frame(mode Mode, t float64, width, height int, dim bool, progress float64) 
 		}
 	}
 
-	maxR := math.Min(float64(height*4), float64(width*2)) * 0.46
+	maxR := math.Min(float64(circleRows*4), float64(width*2)) * 0.41
 	// Slow 8s breathing, plus a quick heartbeat near the end of a phase.
 	breath := 1 + 0.06*math.Sin(t*2*math.Pi/8) +
 		urgency*0.05*math.Sin(t*2*math.Pi/0.9)
@@ -97,9 +154,10 @@ func Frame(mode Mode, t float64, width, height int, dim bool, progress float64) 
 		beat = urgency * 0.3 * math.Max(0, math.Sin(t*2*math.Pi/0.9))
 	}
 
-	// Center in dot coordinates (each cell is 2 dots wide, 4 dots tall).
+	// Circle center in dot coordinates (each cell is 2 dots wide, 4 dots
+	// tall): the middle of the top circleRows rows.
 	cx := float64(width) // width*2 dots / 2
-	cy := float64(height) * 2.0
+	cy := float64(circleRows) * 2.0
 
 	// A comet of light circles the rim once every 12s, dragging a tail.
 	cometA := t * 2 * math.Pi / 12
@@ -113,7 +171,7 @@ func Frame(mode Mode, t float64, width, height int, dim bool, progress float64) 
 	parts := make([]particle, 5)
 	for i := range parts {
 		ang := t*(0.25+0.06*float64(i)) + float64(i)*2*math.Pi/5
-		r := R*1.18 + 2.0*math.Sin(t*0.5+float64(i)*1.3)
+		r := R*1.10 + 1.5*math.Sin(t*0.5+float64(i)*1.3)
 		ta := ang - 0.18
 		parts[i] = particle{
 			cx + r*math.Cos(ang), cy + r*0.95*math.Sin(ang),
@@ -123,7 +181,7 @@ func Frame(mode Mode, t float64, width, height int, dim bool, progress float64) 
 
 	var out strings.Builder
 	for y := 0; y < height; y++ {
-		var line strings.Builder
+		cells := make([]string, width)
 		for x := 0; x < width; x++ {
 			bits := 0
 			best := 0
@@ -191,15 +249,45 @@ func Frame(mode Mode, t float64, width, height int, dim bool, progress float64) 
 				}
 			}
 			if bits == 0 {
-				line.WriteByte(' ')
+				cells[x] = " "
 				continue
 			}
 			if best > 9 {
 				best = 9
 			}
-			line.WriteString(styledGlyph(mode, best, bits))
+			cells[x] = styledGlyph(mode, best, bits)
 		}
-		out.WriteString(line.String() + "\n")
+
+		// Composite overlays on top of the orb: visible runes replace
+		// the cells behind them, spaces stay transparent.
+		for _, ov := range overlays {
+			i := y - ov.Row
+			if i < 0 || i >= len(ov.Lines) {
+				continue
+			}
+			oc := splitStyledCells(ov.Lines[i])
+			if len(oc) == 0 {
+				continue
+			}
+			pad := (width - len(oc)) / 2
+			for j, c := range oc {
+				if c.r == ' ' {
+					continue // transparent: orb shows through
+				}
+				x := pad + j
+				if x < 0 || x >= width {
+					continue
+				}
+				if cells[x] == " " {
+					cells[x] = c.s
+				} else {
+					// The orb passes over the timer: the glyph
+					// shines through it, dimmed.
+					cells[x] = faintStyle.Render(c.s)
+				}
+			}
+		}
+		out.WriteString(strings.Join(cells, "") + "\n")
 	}
 
 	s := out.String()
@@ -244,17 +332,12 @@ func Digits(mode Mode, remaining time.Duration) string {
 
 	ramp := ramps[mode]
 	bright := lipgloss.NewStyle().Foreground(lipgloss.Color(ramp[len(ramp)-1])).Bold(true)
-	dimC := lipgloss.NewStyle().Foreground(lipgloss.Color(ramp[4])).Bold(true)
 
 	var rows [5]strings.Builder
 	for i, ch := range seq {
 		g := font[ch]
-		st := bright
-		if ch == ':' {
-			st = dimC
-		}
 		for r := 0; r < 5; r++ {
-			rows[r].WriteString(st.Render(g[r]))
+			rows[r].WriteString(bright.Render(g[r]))
 			if i < len(seq)-1 {
 				rows[r].WriteByte(' ')
 			}

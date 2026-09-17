@@ -149,26 +149,31 @@ func (m Model) View() string {
 		mode = orb.Pause
 	}
 
-	// Layout: countdown dead-center on the screen, orb right above it,
-	// legend pinned to the bottom row.
+	// Layout: countdown dead-center on the screen, orb above it. The orb's
+	// frame extends down over the counter rows so that when it breathes and
+	// deforms it washes over the timer instead of being cut off — the
+	// digits shine through the overlapping orb, dimmed. Legend at bottom.
 	zone := m.height - 1 // rows above the legend
 	counterH := 6       // label + digits
 	if m.paused {
 		counterH++
 	}
 	counterTop := (zone - counterH + 1) / 2
-	orbH := counterTop - 1 // orb fills the space above the countdown
-	if orbH > 26 {
-		orbH = 26
+
+	// The circle is budgeted to reach the top of the countdown (it
+	// hovers over the label, particles brushing it, and breathes down over
+	// the digits); the frame keeps going past it so the orb expands over
+	// the timer instead of being clipped.
+	circleRows := counterTop + 1
+	if circleRows > 26 {
+		circleRows = 26
 	}
-	padTop := counterTop - 1 - orbH
-	if padTop < 0 {
-		padTop = 0
+	frameTop := counterTop - circleRows
+	if frameTop < 0 {
+		frameTop = 0
 	}
-	padBottom := m.height - 1 - counterTop - counterH
-	if padBottom < 0 {
-		padBottom = 0
-	}
+	frameH := counterTop - frameTop + counterH + 2 // counter + two spare rows
+	frameBot := frameTop + frameH - 1
 
 	phaseDur := m.cfg.Work
 	if m.phase == pausePhase {
@@ -181,28 +186,29 @@ func (m Model) View() string {
 		progress = 1
 	}
 
-	b.WriteString(strings.Repeat("\n", padTop))
-	// Frame already renders full-width lines with the orb centered on the
-	// exact middle column — writing it as a block (not per-line centered)
-	// keeps the orb rock-steady horizontally.
-	b.WriteString(orb.Frame(mode, m.animT, m.width, orbH, m.paused, progress))
-	b.WriteString("\n\n")
-
+	// Counter composited over the orb frame: label, big digits, and the
+	// paused hint. Where the orb covers them, they shine through dimmed.
 	label := "FOCUS"
-	labelStyle := labelStyle
+	labStyle := labelStyle
 	if m.phase == pausePhase {
 		label = "PAUSE"
-		labelStyle = tealLabelStyle
+		labStyle = tealLabelStyle
 	}
-	b.WriteString(centerLines(labelStyle.Render(label), m.width))
-	b.WriteString("\n")
-	b.WriteString(centerLines(orb.Digits(mode, m.remaining), m.width))
+	lines := []string{labStyle.Render(label)}
+	lines = append(lines, strings.Split(orb.Digits(mode, m.remaining), "\n")...)
 	if m.paused {
-		b.WriteString("\n")
-		b.WriteString(centerLines(pauseStyle.Render("❚❚  PAUSED — space to resume"), m.width))
+		lines = append(lines, centerLines(pauseStyle.Render("❚❚  PAUSED — space to resume"), m.width))
 	}
+	ov := orb.Overlay{Row: counterTop - frameTop, Lines: lines}
 
-	b.WriteString(strings.Repeat("\n", padBottom+1))
+	b.WriteString(strings.Repeat("\n", frameTop))
+	b.WriteString(orb.Frame(mode, m.animT, m.width, frameH, circleRows, m.paused, progress, ov))
+
+	// Remaining blank rows, then the legend on the last row.
+	b.WriteString("\n")
+	for row := frameBot + 1; row < m.height-1; row++ {
+		b.WriteString("\n")
+	}
 	b.WriteString(centerLines(m.legend(), m.width))
 	return b.String()
 }
@@ -237,7 +243,7 @@ func (m Model) doneView() string {
 		orbH = 26
 	}
 	var block strings.Builder
-	block.WriteString(orb.Frame(orb.Work, m.animT, m.width, orbH, true, 0))
+	block.WriteString(orb.Frame(orb.Work, m.animT, m.width, orbH, orbH, true, 0))
 	block.WriteString("\n")
 	block.WriteString(centerLines(doneStyle.Render("★  SESSION COMPLETE  ★"), m.width))
 	block.WriteString("\n\n")

@@ -53,7 +53,7 @@ func TestCounterCenteredAtAllSizes(t *testing.T) {
 			if mid-center < -1 || mid-center > 1 {
 				t.Errorf("w=%d h=%d paused=%v: countdown mid row %d, want %d", w, h, paused, mid, center)
 			}
-			// The orb must render above the countdown.
+			// The orb must render above the countdown...
 			orbFound := false
 			for i := 0; i < top; i++ {
 				if strings.ContainsAny(lines[i], "⣿⠿⢿⣀⡿") {
@@ -63,6 +63,13 @@ func TestCounterCenteredAtAllSizes(t *testing.T) {
 			}
 			if !orbFound {
 				t.Errorf("w=%d h=%d paused=%v: no orb above countdown", w, h, paused)
+			}
+			// ...and the timer must stay out of the orb at rest: digit rows
+			// render at full brightness (no dimmed transparency cells),
+			// because the orb hovers above the countdown.
+			midRow := (top + bottom) / 2
+			if strings.Contains(lines[midRow], "\x1b[2m") {
+				t.Errorf("w=%d h=%d paused=%v: digits unexpectedly covered by the orb", w, h, paused)
 			}
 		}
 	}
