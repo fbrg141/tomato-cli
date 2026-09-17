@@ -9,11 +9,11 @@ import (
 
 var ansiRe = regexp.MustCompile("\x1b\\[[0-9;]*m")
 
-// orbRows returns the first and last rendered line index containing orb glyphs.
-func orbRows(lines []string) (top, bottom int) {
+// digitRows returns the first and last rendered line index of the big countdown.
+func digitRows(lines []string) (top, bottom int) {
 	top, bottom = -1, -1
 	for i, ln := range lines {
-		if strings.ContainsAny(ln, "⣿⠿⢿⣀⡿") {
+		if strings.ContainsRune(ln, '█') {
 			if top == -1 {
 				top = i
 			}
@@ -23,9 +23,9 @@ func orbRows(lines []string) (top, bottom int) {
 	return top, bottom
 }
 
-// The orb must sit dead-center of the screen with the legend on the last row,
-// and the view must fill the terminal exactly (no scrolling).
-func TestOrbCenteredAtAllSizes(t *testing.T) {
+// The countdown must sit dead-center of the screen with the orb above it and
+// the legend on the last row; the view must fill the terminal exactly.
+func TestCounterCenteredAtAllSizes(t *testing.T) {
 	for _, sz := range [][2]int{{80, 24}, {80, 30}, {100, 40}, {120, 50}, {70, 25}} {
 		w, h := sz[0], sz[1]
 		for _, paused := range []bool{false, true} {
@@ -38,13 +38,12 @@ func TestOrbCenteredAtAllSizes(t *testing.T) {
 				t.Errorf("w=%d h=%d paused=%v: view has %d lines, want %d", w, h, paused, len(lines), h)
 				continue
 			}
-			legend := strings.TrimSpace(lines[h-1])
-			if !strings.Contains(legend, "interval") {
+			if legend := strings.TrimSpace(lines[h-1]); !strings.Contains(legend, "interval") {
 				t.Errorf("w=%d h=%d paused=%v: legend not on last row: %q", w, h, paused, legend)
 			}
-			top, bottom := orbRows(lines)
+			top, bottom := digitRows(lines)
 			if top == -1 {
-				t.Errorf("w=%d h=%d paused=%v: no orb rendered", w, h, paused)
+				t.Errorf("w=%d h=%d paused=%v: no countdown rendered", w, h, paused)
 				continue
 			}
 			mid := (top + bottom) / 2
@@ -52,7 +51,18 @@ func TestOrbCenteredAtAllSizes(t *testing.T) {
 			// ±1: with an even row count the geometric center falls between
 			// rows, so exact centering is impossible.
 			if mid-center < -1 || mid-center > 1 {
-				t.Errorf("w=%d h=%d paused=%v: orb mid row %d, want %d", w, h, paused, mid, center)
+				t.Errorf("w=%d h=%d paused=%v: countdown mid row %d, want %d", w, h, paused, mid, center)
+			}
+			// The orb must render above the countdown.
+			orbFound := false
+			for i := 0; i < top; i++ {
+				if strings.ContainsAny(lines[i], "⣿⠿⢿⣀⡿") {
+					orbFound = true
+					break
+				}
+			}
+			if !orbFound {
+				t.Errorf("w=%d h=%d paused=%v: no orb above countdown", w, h, paused)
 			}
 		}
 	}

@@ -60,8 +60,10 @@ func TestPauseFreezesCountdown(t *testing.T) {
 	if !m.paused || m.remaining != before {
 		t.Fatalf("paused timer should freeze; remaining before=%v after=%v", before, m.remaining)
 	}
-	if m.animT != 0 {
-		t.Fatalf("animation clock should freeze while paused, got %v", m.animT)
+	// The countdown is frozen but the orb should drift slowly, not stop dead:
+	// 20 ticks ≈ 0.67s of wall time → ~0.08s of animation at 12% speed.
+	if m.animT <= 0 || m.animT >= 0.2 {
+		t.Fatalf("animation should drift slowly while paused, got animT=%v", m.animT)
 	}
 }
 

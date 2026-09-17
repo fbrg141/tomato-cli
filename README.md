@@ -23,7 +23,6 @@ tomato -g -w 45           # skip setup, start immediately
 | `tab` / `↑↓` | move between setup fields |
 | `enter` | start the timer |
 | `space` | pause / resume |
-| `f` | focus-mode hint (planned, see issues) |
 | `q` / `esc` | quit |
 
 The terminal bell rings when a work or pause interval ends.

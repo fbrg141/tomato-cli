@@ -42,7 +42,6 @@ type Model struct {
 	interval   int // completed work intervals
 	paused     bool
 	done       bool
-	focusHint  bool
 	bellFrames int
 	quit       bool
 
@@ -91,6 +90,9 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			if m.remaining <= 0 {
 				m.transition()
 			}
+		} else if m.paused {
+			// Dreamy slow drift while resting instead of a hard freeze.
+			m.animT += dt.Seconds() * 0.12
 		}
 		return m, tickEvery()
 
@@ -100,8 +102,6 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			if !m.done {
 				m.paused = !m.paused
 			}
-		case "f", "F":
-			m.focusHint = !m.focusHint
 		case "q":
 			m.quit = true
 		default:
@@ -149,29 +149,44 @@ func (m Model) View() string {
 		mode = orb.Pause
 	}
 
-	// Layout: orb dead-center on the screen, countdown right below it,
+	// Layout: countdown dead-center on the screen, orb right above it,
 	// legend pinned to the bottom row.
 	zone := m.height - 1 // rows above the legend
-	extraRows := 0
+	counterH := 6       // label + digits
 	if m.paused {
-		extraRows++
+		counterH++
 	}
-	if m.focusHint {
-		extraRows++
-	}
-	orbH := zone - 13 - extraRows // 13 = label + digits + breathing room
+	counterTop := (zone - counterH + 1) / 2
+	orbH := counterTop - 1 // orb fills the space above the countdown
 	if orbH > 26 {
 		orbH = 26
 	}
-	orbTop := (zone - orbH + 1) / 2
-	padBottom := m.height - 7 - orbTop - orbH - extraRows
+	padTop := counterTop - 1 - orbH
+	if padTop < 0 {
+		padTop = 0
+	}
+	padBottom := m.height - 1 - counterTop - counterH
 	if padBottom < 0 {
 		padBottom = 0
 	}
 
-	b.WriteString(strings.Repeat("\n", orbTop))
-	b.WriteString(centerLines(orb.Frame(mode, m.animT, m.width, orbH, m.paused), m.width))
-	b.WriteString("\n")
+	phaseDur := m.cfg.Work
+	if m.phase == pausePhase {
+		phaseDur = m.cfg.Pause
+	}
+	progress := 1 - m.remaining.Seconds()/phaseDur.Seconds()
+	if progress < 0 {
+		progress = 0
+	} else if progress > 1 {
+		progress = 1
+	}
+
+	b.WriteString(strings.Repeat("\n", padTop))
+	// Frame already renders full-width lines with the orb centered on the
+	// exact middle column — writing it as a block (not per-line centered)
+	// keeps the orb rock-steady horizontally.
+	b.WriteString(orb.Frame(mode, m.animT, m.width, orbH, m.paused, progress))
+	b.WriteString("\n\n")
 
 	label := "FOCUS"
 	labelStyle := labelStyle
@@ -186,14 +201,8 @@ func (m Model) View() string {
 		b.WriteString("\n")
 		b.WriteString(centerLines(pauseStyle.Render("❚❚  PAUSED — space to resume"), m.width))
 	}
-	if m.focusHint {
-		b.WriteString("\n")
-		b.WriteString(centerLines(focusStyle.Render(
-			`focus: create a Shortcuts.app shortcut named "Tomato Focus" — planned, see GitHub issue #2`), m.width))
-	}
 
-	b.WriteString(strings.Repeat("\n", padBottom))
-	b.WriteString("\n")
+	b.WriteString(strings.Repeat("\n", padBottom+1))
 	b.WriteString(centerLines(m.legend(), m.width))
 	return b.String()
 }
@@ -210,7 +219,6 @@ func (m Model) legend() string {
 	var legend strings.Builder
 	for _, kv := range [][2]string{
 		{"space", "pause"},
-		{"f", "focus"},
 		{"q", "quit"},
 	} {
 		legend.WriteString(keyStyle.Render("["+kv[0]+"] ") + dimStyle.Render(kv[1]) + "   ")
@@ -229,7 +237,7 @@ func (m Model) doneView() string {
 		orbH = 26
 	}
 	var block strings.Builder
-	block.WriteString(centerLines(orb.Frame(orb.Work, m.animT, m.width, orbH, true), m.width))
+	block.WriteString(orb.Frame(orb.Work, m.animT, m.width, orbH, true, 0))
 	block.WriteString("\n")
 	block.WriteString(centerLines(doneStyle.Render("★  SESSION COMPLETE  ★"), m.width))
 	block.WriteString("\n\n")
@@ -257,6 +265,5 @@ var (
 	labelStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("#ff6b3d")).Bold(true).Padding(0, 1)
 	tealLabelStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#3fd6c9")).Bold(true).Padding(0, 1)
 	pauseStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("#ffd98a")).Bold(true)
-	focusStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("#888888"))
 	doneStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("#ffd98a")).Bold(true)
 )

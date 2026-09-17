@@ -62,31 +62,62 @@ func styledGlyph(mode Mode, rampIdx, bits int) string {
 
 // Frame renders the orb as braille art. t is animation time in seconds.
 // width/height are in terminal cells; dim lowers brightness (paused state).
-func Frame(mode Mode, t float64, width, height int, dim bool) string {
+// progress is the current phase's completion in [0,1] — it drives an
+// end-of-phase heartbeat; pass 0 to disable.
+func Frame(mode Mode, t float64, width, height int, dim bool, progress float64) string {
 	if width < 3 {
 		width = 3
 	}
 	if height < 2 {
 		height = 2
 	}
+	if progress < 0 {
+		progress = 0
+	} else if progress > 1 {
+		progress = 1
+	}
+
+	// Urgency: in the last 10% of a phase the heartbeat ramps up to full.
+	urgency := 0.0
+	if progress > 0.9 {
+		urgency = (progress - 0.9) * 10
+		if urgency > 1 {
+			urgency = 1
+		}
+	}
 
 	maxR := math.Min(float64(height*4), float64(width*2)) * 0.46
-	breath := 1 + 0.06*math.Sin(t*2*math.Pi/8) // 8s breathing cycle
+	// Slow 8s breathing, plus a quick heartbeat near the end of a phase.
+	breath := 1 + 0.06*math.Sin(t*2*math.Pi/8) +
+		urgency*0.05*math.Sin(t*2*math.Pi/0.9)
 	R := maxR * breath
+	// Heartbeat flash: a pulse of light from the core on every beat.
+	beat := 0.0
+	if urgency > 0 {
+		beat = urgency * 0.3 * math.Max(0, math.Sin(t*2*math.Pi/0.9))
+	}
 
 	// Center in dot coordinates (each cell is 2 dots wide, 4 dots tall).
 	cx := float64(width) // width*2 dots / 2
 	cy := float64(height) * 2.0
 
-	// Shimmer particles on slow orbits.
-	type particle struct{ x, y float64 }
-	parts := make([]particle, 7)
+	// A comet of light circles the rim once every 12s, dragging a tail.
+	cometA := t * 2 * math.Pi / 12
+	cometAmp := 0.55
+	if mode == Pause {
+		cometAmp = 0.40
+	}
+
+	// Shimmer particles on slow orbits, each trailing behind itself.
+	type particle struct{ x, y, tx, ty float64 }
+	parts := make([]particle, 5)
 	for i := range parts {
-		ang := t*(0.25+0.06*float64(i)) + float64(i)*2*math.Pi/7
+		ang := t*(0.25+0.06*float64(i)) + float64(i)*2*math.Pi/5
 		r := R*1.18 + 2.0*math.Sin(t*0.5+float64(i)*1.3)
+		ta := ang - 0.18
 		parts[i] = particle{
-			cx + r*math.Cos(ang),
-			cy + r*0.95*math.Sin(ang),
+			cx + r*math.Cos(ang), cy + r*0.95*math.Sin(ang),
+			cx + r*math.Cos(ta), cy + r*0.95*math.Sin(ta),
 		}
 	}
 
@@ -101,19 +132,54 @@ func Frame(mode Mode, t float64, width, height int, dim bool) string {
 					px := float64(x*2 + dx)
 					py := float64(y*4 + dy)
 					d := math.Hypot(px-cx, py-cy)
+					th := math.Atan2(py-cy, px-cx)
+
+					// Organic edge: low-frequency angular wobble rides on
+					// top of the breathing, and the blob grows agitated
+					// (a fast tremble) as the phase nears its end.
+					deform := 0.05*math.Sin(2*th+t*0.7) +
+						0.035*math.Sin(3*th-t*0.5+1.3) +
+						urgency*0.03*math.Sin(4*th+t*2.4)
+					edge := R * (1 + deform)
 
 					v := 0.0
-					if d < R {
-						q := d / R
-						v = (1 - q*q) * (1 - 0.25*q)
+					if d < edge {
+						q := d / edge
+						v = (1 - q*q) * (1 - 0.25*q) + beat*(1-q)
 					}
-					// Glowing rim.
-					rim := d - R*1.04
+
+					// Swirling plasma bands inside the orb: two
+					// counter-rotating waves, fading toward core and rim.
+					if q := d / edge; q < 1.25 {
+						win := q * (1.25 - q)
+						v += 0.22 * math.Sin(3*th+t*0.9+q*4.0) * win
+						v += 0.10 * math.Sin(5*th-t*0.6-q*6.0) * win
+					}
+
+					// Glowing rim, following the deformed edge.
+					rim := d - edge*1.04
 					v += 0.6 * math.Exp(-rim*rim/1.2)
-					// Particle glows.
+
+					// Comet streak racing around the rim; the tail
+					// widens behind the head.
+					dd := math.Mod(th-cometA, 2*math.Pi)
+					if dd > math.Pi {
+						dd -= 2 * math.Pi
+					} else if dd < -math.Pi {
+						dd += 2 * math.Pi
+					}
+					s2 := 0.05
+					if dd < 0 {
+						s2 = 0.05 - 0.20*dd/math.Pi
+					}
+					v += cometAmp * math.Exp(-dd*dd/s2) * math.Exp(-rim*rim/2.5)
+
+					// Particle glows and their tails.
 					for _, p := range parts {
 						pd := math.Hypot(px-p.x, py-p.y)
 						v += 0.35 * math.Exp(-pd*pd/1.5)
+						td := math.Hypot(px-p.tx, py-p.ty)
+						v += 0.15 * math.Exp(-td*td/1.2)
 					}
 
 					if v > 0.10 {
@@ -133,7 +199,7 @@ func Frame(mode Mode, t float64, width, height int, dim bool) string {
 			}
 			line.WriteString(styledGlyph(mode, best, bits))
 		}
-		out.WriteString(strings.TrimRight(line.String(), " ") + "\n")
+		out.WriteString(line.String() + "\n")
 	}
 
 	s := out.String()
