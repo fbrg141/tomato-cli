@@ -27,7 +27,7 @@ const (
 	pausePhase
 )
 
-const tickInterval = 100 * time.Millisecond
+const tickInterval = time.Second / 30
 
 type tickMsg time.Time
 
@@ -36,8 +36,8 @@ type Model struct {
 	cfg       Config
 	phase     phase
 	remaining time.Duration
-	elapsed   time.Duration // time in current phase
-	animT     float64       // animation clock, frozen while paused
+	animT     float64   // animation clock, driven by wall-clock deltas
+	lastTick  time.Time // wall clock of the previously received tick
 
 	interval   int // completed work intervals
 	paused     bool
@@ -73,14 +73,21 @@ func (m Model) Init() tea.Cmd { return tickEvery() }
 func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tickMsg:
-		_ = msg
 		if m.bellFrames > 0 {
 			m.bellFrames--
 		}
+		// Advance on wall-clock deltas so the animation and countdown
+		// stay smooth and accurate even when ticks arrive late or in bursts.
+		var dt time.Duration
+		if !m.lastTick.IsZero() {
+			if d := time.Time(msg).Sub(m.lastTick); d > 0 {
+				dt = d
+			}
+		}
+		m.lastTick = time.Time(msg)
 		if !m.paused && !m.done {
-			m.animT += tickInterval.Seconds()
-			m.remaining -= tickInterval
-			m.elapsed += tickInterval
+			m.animT += dt.Seconds()
+			m.remaining -= dt
 			if m.remaining <= 0 {
 				m.transition()
 			}
@@ -113,7 +120,6 @@ func (m *Model) transition() {
 		m.interval++
 		if m.cfg.Cycles > 0 && m.interval >= m.cfg.Cycles {
 			m.done = true
-			m.elapsed = m.cfg.Work
 			return
 		}
 		m.phase = pausePhase
@@ -122,19 +128,20 @@ func (m *Model) transition() {
 		m.phase = workPhase
 		m.remaining = m.cfg.Work
 	}
-	m.elapsed = 0
-}
-
-func (m Model) phaseDuration() time.Duration {
-	if m.phase == workPhase {
-		return m.cfg.Work
-	}
-	return m.cfg.Pause
 }
 
 func (m Model) View() string {
+	var b strings.Builder
+	if m.bellFrames > 0 {
+		b.WriteString("\a")
+	}
 	if m.width < 70 || m.height < 24 {
-		return dimStyle.Render("\n  terminal too small — need at least 70 columns x 24 rows.\n  resize the window and the timer will appear.\n")
+		b.WriteString(dimStyle.Render("\n  terminal too small — need at least 70 columns x 24 rows.\n  resize the window and the timer will appear.\n"))
+		return b.String()
+	}
+	if m.done {
+		b.WriteString(m.doneView())
+		return b.String()
 	}
 
 	mode := orb.Work
@@ -142,26 +149,28 @@ func (m Model) View() string {
 		mode = orb.Pause
 	}
 
-	var b strings.Builder
-	if m.bellFrames > 0 {
-		b.WriteString("\a")
+	// Layout: orb dead-center on the screen, countdown right below it,
+	// legend pinned to the bottom row.
+	zone := m.height - 1 // rows above the legend
+	extraRows := 0
+	if m.paused {
+		extraRows++
+	}
+	if m.focusHint {
+		extraRows++
+	}
+	orbH := zone - 13 - extraRows // 13 = label + digits + breathing room
+	if orbH > 26 {
+		orbH = 26
+	}
+	orbTop := (zone - orbH + 1) / 2
+	padBottom := m.height - 7 - orbTop - orbH - extraRows
+	if padBottom < 0 {
+		padBottom = 0
 	}
 
-	// Layout: orb on top, label+digits+bar in the middle, legend at bottom.
-	orbH := m.height - 11
-	if orbH < 6 {
-		orbH = 6
-	}
-	if orbH > 16 {
-		orbH = 16
-	}
-
-	if m.done {
-		return m.doneView()
-	}
-
-	orbArt := orb.Frame(mode, m.animT, m.width, orbH, m.paused)
-	b.WriteString(centerLines(orbArt, m.width))
+	b.WriteString(strings.Repeat("\n", orbTop))
+	b.WriteString(centerLines(orb.Frame(mode, m.animT, m.width, orbH, m.paused), m.width))
 	b.WriteString("\n")
 
 	label := "FOCUS"
@@ -172,40 +181,24 @@ func (m Model) View() string {
 	}
 	b.WriteString(centerLines(labelStyle.Render(label), m.width))
 	b.WriteString("\n")
-
 	b.WriteString(centerLines(orb.Digits(mode, m.remaining), m.width))
-	b.WriteString("\n")
-
-	// Progress bar for the current phase.
-	frac := 0.0
-	if d := m.phaseDuration(); d > 0 {
-		frac = m.elapsed.Seconds() / d.Seconds()
-	}
-	barW := 24
-	filled := int(frac * float64(barW))
-	if filled > barW {
-		filled = barW
-	}
-	barStyle, fillStyle := tealBarStyle, tealFillStyle
-	if m.phase == workPhase {
-		barStyle, fillStyle = barStyleW, fillStyleW
-	}
-	bar := fillStyle.Render(strings.Repeat("█", filled)) +
-		barStyle.Render(strings.Repeat("░", barW-filled))
-	b.WriteString(centerLines(bar, m.width))
-	b.WriteString("\n\n")
-
 	if m.paused {
-		b.WriteString(centerLines(pauseStyle.Render("❚❚  PAUSED — space to resume"), m.width))
 		b.WriteString("\n")
+		b.WriteString(centerLines(pauseStyle.Render("❚❚  PAUSED — space to resume"), m.width))
 	}
 	if m.focusHint {
+		b.WriteString("\n")
 		b.WriteString(centerLines(focusStyle.Render(
 			`focus: create a Shortcuts.app shortcut named "Tomato Focus" — planned, see GitHub issue #2`), m.width))
-		b.WriteString("\n")
 	}
 
-	// Legend.
+	b.WriteString(strings.Repeat("\n", padBottom))
+	b.WriteString("\n")
+	b.WriteString(centerLines(m.legend(), m.width))
+	return b.String()
+}
+
+func (m Model) legend() string {
 	cur := m.interval + 1
 	total := fmt.Sprint(m.cfg.Cycles)
 	if m.cfg.Cycles == 0 {
@@ -224,28 +217,28 @@ func (m Model) View() string {
 	}
 	legend.WriteString(dimStyle.Render("interval ") +
 		keyStyle.Render(fmt.Sprintf("%d/%s", cur, total)))
-	b.WriteString(centerLines(legend.String(), m.width))
-
-	return b.String()
+	return legend.String()
 }
 
 func (m Model) doneView() string {
-	var b strings.Builder
-	if m.bellFrames > 0 {
-		b.WriteString("\a")
+	orbH := m.height - 12
+	if orbH < 6 {
+		orbH = 6
 	}
-	orbArt := orb.Frame(orb.Work, m.animT, m.width, m.height-12, true)
-	b.WriteString(centerLines(orbArt, m.width))
-	b.WriteString("\n")
-	title := doneStyle.Render("★  SESSION COMPLETE  ★")
-	b.WriteString(centerLines(title, m.width))
-	b.WriteString("\n\n")
+	if orbH > 26 {
+		orbH = 26
+	}
+	var block strings.Builder
+	block.WriteString(centerLines(orb.Frame(orb.Work, m.animT, m.width, orbH, true), m.width))
+	block.WriteString("\n")
+	block.WriteString(centerLines(doneStyle.Render("★  SESSION COMPLETE  ★"), m.width))
+	block.WriteString("\n\n")
 	stats := dimStyle.Render(fmt.Sprintf("%d focus interval(s) · %s work · %s pause",
-		m.cfg.Cycles, m.cfg.Work, m.cfg.Pause))
-	b.WriteString(centerLines(stats, m.width))
-	b.WriteString("\n\n")
-	b.WriteString(centerLines(dimStyle.Render("press any key to exit"), m.width))
-	return b.String()
+		m.interval, m.cfg.Work, m.cfg.Pause))
+	block.WriteString(centerLines(stats, m.width))
+	block.WriteString("\n\n")
+	block.WriteString(centerLines(dimStyle.Render("press any key to exit"), m.width))
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, block.String())
 }
 
 func centerLines(s string, width int) string {
@@ -263,10 +256,6 @@ var (
 	keyStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("#ffd98a")).Bold(true)
 	labelStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("#ff6b3d")).Bold(true).Padding(0, 1)
 	tealLabelStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#3fd6c9")).Bold(true).Padding(0, 1)
-	barStyleW      = lipgloss.NewStyle().Foreground(lipgloss.Color("#5a2410"))
-	fillStyleW     = lipgloss.NewStyle().Foreground(lipgloss.Color("#f6823f"))
-	tealBarStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#0d4a48"))
-	tealFillStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#3fd6c9"))
 	pauseStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("#ffd98a")).Bold(true)
 	focusStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("#888888"))
 	doneStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("#ffd98a")).Bold(true)

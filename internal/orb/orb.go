@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
@@ -30,6 +31,35 @@ var ramps = [2][]string{
 	},
 }
 
+// glyphKey identifies a styled braille glyph: mode, ramp index, dot bits.
+type glyphKey struct {
+	mode Mode
+	ramp int
+	bits int
+}
+
+// glyphCache memoizes styled glyphs so frames don't construct thousands of
+// lipgloss styles per second. Filled lazily so the color profile is already
+// detected by the time the first glyph is rendered.
+var (
+	glyphMu    sync.Mutex
+	glyphCache = map[glyphKey]string{}
+)
+
+func styledGlyph(mode Mode, rampIdx, bits int) string {
+	k := glyphKey{mode: mode, ramp: rampIdx, bits: bits}
+	glyphMu.Lock()
+	defer glyphMu.Unlock()
+	if s, ok := glyphCache[k]; ok {
+		return s
+	}
+	s := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(ramps[mode][rampIdx])).
+		Render(string(rune(0x2800 + bits)))
+	glyphCache[k] = s
+	return s
+}
+
 // Frame renders the orb as braille art. t is animation time in seconds.
 // width/height are in terminal cells; dim lowers brightness (paused state).
 func Frame(mode Mode, t float64, width, height int, dim bool) string {
@@ -40,7 +70,7 @@ func Frame(mode Mode, t float64, width, height int, dim bool) string {
 		height = 2
 	}
 
-	maxR := math.Min(float64(height*4), float64(width*2)) * 0.42
+	maxR := math.Min(float64(height*4), float64(width*2)) * 0.46
 	breath := 1 + 0.06*math.Sin(t*2*math.Pi/8) // 8s breathing cycle
 	R := maxR * breath
 
@@ -60,7 +90,6 @@ func Frame(mode Mode, t float64, width, height int, dim bool) string {
 		}
 	}
 
-	ramp := ramps[mode]
 	var out strings.Builder
 	for y := 0; y < height; y++ {
 		var line strings.Builder
@@ -99,12 +128,10 @@ func Frame(mode Mode, t float64, width, height int, dim bool) string {
 				line.WriteByte(' ')
 				continue
 			}
-			if best > len(ramp)-1 {
-				best = len(ramp) - 1
+			if best > 9 {
+				best = 9
 			}
-			ch := string(rune(0x2800 + bits))
-			line.WriteString(lipgloss.NewStyle().
-				Foreground(lipgloss.Color(ramp[best])).Render(ch))
+			line.WriteString(styledGlyph(mode, best, bits))
 		}
 		out.WriteString(strings.TrimRight(line.String(), " ") + "\n")
 	}

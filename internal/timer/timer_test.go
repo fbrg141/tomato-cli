@@ -14,12 +14,21 @@ func teaKey(s string) tea.KeyMsg {
 	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
 }
 
+// runTicks delivers n ticks spaced tickInterval apart on the wall clock,
+// as the real program would.
+func runTicks(m Model, n int) Model {
+	base := time.Now()
+	for i := 1; i <= n; i++ {
+		m, _ = m.Update(tickMsg(base.Add(time.Duration(i) * tickInterval)))
+	}
+	return m
+}
+
 func TestTransitionsFullCycle(t *testing.T) {
 	m := New(Config{Work: 3 * time.Second, Pause: 2 * time.Second, Cycles: 2})
-	tick := tickMsg(time.Now())
-	for i := 0; i < 120; i++ {
-		m, _ = m.Update(tick)
-	}
+	// 2 cycles = 10s of wall time; tick count derived from the tick rate.
+	n := int(10*time.Second/tickInterval) + 20
+	m = runTicks(m, n)
 	if !m.done {
 		t.Fatalf("expected done after 2 cycles, got remaining=%v interval=%d", m.remaining, m.interval)
 	}
@@ -30,33 +39,55 @@ func TestTransitionsFullCycle(t *testing.T) {
 
 func TestInfiniteCycles(t *testing.T) {
 	m := New(Config{Work: time.Second, Pause: time.Second, Cycles: 0})
-	tick := tickMsg(time.Now())
-	for i := 0; i < 100; i++ {
-		m, _ = m.Update(tick)
-	}
+	n := 200
+	m = runTicks(m, n)
 	if m.done {
 		t.Fatal("infinite mode should never be done")
 	}
-	// 100 ticks = 10s = 10 phases; every other phase end is a work interval.
-	if m.interval != 5 {
-		t.Fatalf("expected 5 completed intervals after 10s, got %d", m.interval)
+	// Each work interval k ends at k*work + (k-1)*pause of wall time.
+	elapsed := time.Duration(n-1) * tickInterval
+	want := int((elapsed + time.Second) / (2 * time.Second))
+	if m.interval != want {
+		t.Fatalf("after %v of wall time, expected %d completed intervals, got %d", elapsed, want, m.interval)
 	}
 }
 
 func TestPauseFreezesCountdown(t *testing.T) {
 	m := New(Config{Work: time.Second, Pause: time.Second, Cycles: 0})
-	tick := tickMsg(time.Now())
-	space := teaKey(" ")
-	m, _ = m.Update(space)
+	m, _ = m.Update(teaKey(" "))
 	before := m.remaining
-	for i := 0; i < 20; i++ {
-		m, _ = m.Update(tick)
-	}
+	m = runTicks(m, 20)
 	if !m.paused || m.remaining != before {
 		t.Fatalf("paused timer should freeze; remaining before=%v after=%v", before, m.remaining)
 	}
 	if m.animT != 0 {
 		t.Fatalf("animation clock should freeze while paused, got %v", m.animT)
+	}
+}
+
+// Ticks may arrive late or in bursts; the countdown must follow wall time.
+func TestWallClockTickingIgnoresTickJitter(t *testing.T) {
+	m := New(Config{Work: time.Second, Pause: time.Second, Cycles: 0})
+	base := time.Now()
+	// First tick anchors the clock (no time elapses), then irregular gaps
+	// totaling exactly 1s — the work phase should end on the last tick.
+	gaps := []time.Duration{
+		10 * time.Millisecond,
+		240 * time.Millisecond,
+		700 * time.Millisecond,
+		50 * time.Millisecond,
+		10 * time.Millisecond,
+	}
+	now := base
+	for _, g := range gaps {
+		now = now.Add(g)
+		m, _ = m.Update(tickMsg(now))
+	}
+	if m.phase != pausePhase {
+		t.Fatalf("expected pause phase after 1s of wall time, phase=%v remaining=%v", m.phase, m.remaining)
+	}
+	if m.interval != 1 {
+		t.Fatalf("expected 1 completed interval, got %d", m.interval)
 	}
 }
 
