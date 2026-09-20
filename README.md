@@ -27,10 +27,30 @@ tomato -g -w 45           # skip setup, start immediately
 
 The terminal bell rings when a work or pause interval ends.
 
+## Install
+
+```sh
+go install github.com/fbrg141/tomato-cli@latest
+```
+
+Or grab a prebuilt binary from a [release](https://github.com/fbrg141/tomato-cli/releases).
+
 ## Build
 
 ```sh
 go build -o tomato .
+```
+
+To cut a release (binaries + checksums on GitHub Releases, via CI):
+
+```sh
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+Local dry run:
+
+```sh
+goreleaser release --snapshot --clean
 ```
 
 ## Layout
@@ -40,4 +60,5 @@ main.go               flags, screen switching
 internal/setup/       setup form screen
 internal/timer/       session state machine (work/pause × cycles)
 internal/orb/         braille orb renderer + big countdown digits
+.goreleaser.yaml      release config (binaries + GitHub Releases)
 ```

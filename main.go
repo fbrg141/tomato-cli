@@ -12,12 +12,21 @@ import (
 	"tomato/internal/timer"
 )
 
+// version is injected at build time by goreleaser (-X main.version=...).
+var version = "dev"
+
+var versionFlag bool
+
 type screen int
 
 const (
 	setupScreen screen = iota
 	timerScreen
 )
+
+func init() {
+	flag.BoolVar(&versionFlag, "version", false, "print version and exit")
+}
 
 // model switches between the setup form and the timer.
 type model struct {
@@ -115,6 +124,11 @@ flags:`)
 		flag.PrintDefaults()
 	}
 	flag.Parse()
+
+	if versionFlag {
+		fmt.Println("tomato", version)
+		return
+	}
 
 	go_ := *startNow || *startNowS
 	cyc := *cycles
