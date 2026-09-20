@@ -8,8 +8,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"tomato/internal/setup"
-	"tomato/internal/timer"
+	"github.com/fbrg141/tomato-cli/internal/setup"
+	"github.com/fbrg141/tomato-cli/internal/timer"
 )
 
 // version is injected at build time by goreleaser (-X main.version=...).

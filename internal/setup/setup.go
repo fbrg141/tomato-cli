@@ -10,7 +10,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"tomato/internal/timer"
+	"github.com/fbrg141/tomato-cli/internal/timer"
 )
 
 // StartMsg is emitted when the form is validated and the timer should start.

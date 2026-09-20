@@ -10,7 +10,7 @@ import (
 	"github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"tomato/internal/orb"
+	"github.com/fbrg141/tomato-cli/internal/orb"
 )
 
 // Config is a parsed session configuration.
