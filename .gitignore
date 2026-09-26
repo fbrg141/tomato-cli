@@ -1,2 +1,2 @@
 /tomato
-*.test
+*.test/tomato-cli

@@ -23,9 +23,10 @@ tomato -g -w 45           # skip setup, start immediately
 | `tab` / `↑↓` | move between setup fields |
 | `enter` | start the timer |
 | `space` | pause / resume |
+| `enter` | skip the current period |
 | `q` / `esc` | quit |
 
-The terminal bell rings when a work or pause interval ends.
+When a period ends, a system sound plays and the terminal bell rings (skipping with `enter` also sounds, since the period is over). If your terminal mutes bells, you'll still hear the sound.
 
 ## Install
 

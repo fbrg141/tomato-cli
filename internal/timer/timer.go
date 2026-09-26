@@ -89,6 +89,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			m.remaining -= dt
 			if m.remaining <= 0 {
 				m.transition()
+				return m, tea.Batch(tickEvery(), Bell)
 			}
 		} else if m.paused {
 			// Dreamy slow drift while resting instead of a hard freeze.
@@ -102,6 +103,11 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			if !m.done {
 				m.paused = !m.paused
 			}
+		case "enter":
+			if !m.done {
+				m.skip()
+				return m, Bell
+			}
 		case "q":
 			m.quit = true
 		default:
@@ -113,8 +119,20 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	return m, nil
 }
 
-// transition fires at the end of a phase; rings the bell and advances.
+// transition fires at the natural end of a phase; rings the bell and advances.
 func (m *Model) transition() {
+	m.advance()
+}
+
+// skip jumps to the next phase immediately (clears pause; still rings).
+func (m *Model) skip() {
+	m.paused = false
+	m.advance()
+}
+
+// advance moves from the current phase to the next one, or finishes the
+// session once all cycles are complete. Every phase change rings the bell.
+func (m *Model) advance() {
 	m.bellFrames = 2 // \a rendered for ~2 frames
 	if m.phase == workPhase {
 		m.interval++
@@ -225,6 +243,7 @@ func (m Model) legend() string {
 	var legend strings.Builder
 	for _, kv := range [][2]string{
 		{"space", "pause"},
+		{"enter", "skip"},
 		{"q", "quit"},
 	} {
 		legend.WriteString(keyStyle.Render("["+kv[0]+"] ") + dimStyle.Render(kv[1]) + "   ")
